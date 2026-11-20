@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Visualizador de A*</title>
+<style>
+  body{font-family:Arial,sans-serif;margin:16px;background:#f4f4f4}
+  button{padding:6px 12px;margin:2px;cursor:pointer}
+  canvas{border:2px solid #333;background:#fff;display:block;margin:10px 0}
+  .lg span{display:inline-block;width:14px;height:14px;border:1px solid #333;vertical-align:middle;margin:0 3px 0 10px}
+  #msg{font-weight:bold;min-height:22px}
+  pre{background:#fff;border:1px solid #bbb;padding:8px;max-height:220px;overflow:auto}
+</style>
+</head>
+<body>
+<h2>Búsqueda A* en una cuadrícula</h2>
+
+<div>
+  <b>Al hacer clic:</b>
+  <label><input type="radio" name="modo" value="muro" checked> Dibujar/borrar obstáculos</label>
+  <label><input type="radio" name="modo" value="inicio"> Mover inicio</label>
+  <label><input type="radio" name="modo" value="meta"> Mover meta</label>
+</div>
+<div>
+  <button id="bAstar">Iniciar A*</button>
+  <button id="bBfs">Iniciar BFS (comparar)</button>
+  <button id="bReset">Reiniciar mapa</button>
+  <button id="bTest">Probar algoritmo</button>
+</div>
+
+<canvas id="cv"></canvas>
+
+<div class="lg">
+  <span style="background:#2979ff"></span>Inicio
+  <span style="background:#e53935"></span>Meta
+  <span style="background:#222"></span>Obstáculo
+  <span style="background:#fff"></span>No explorado
+  <span style="background:#90caf9"></span>Frontera (lista abierta)
+  <span style="background:#ffe082"></span>Explorado (lista cerrada)
+  <span style="background:#43a047"></span>Ruta final
+</div>
+<div id="msg"></div>
+<pre id="out">Resultados de ejecuciones y pruebas aparecerán aquí.</pre>
+
+<script>
+/* ============ CONFIGURACIÓN Y ESTADO ============ */
+const COLS = 25, ROWS = 15, SIZE = 30, DELAY_MS = 40;
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];   // 4 movimientos, costo 1 cada uno
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+cv.width = COLS * SIZE; cv.height = ROWS * SIZE;
+
+let grid, start, goal;          // grid[r][c]: 0 = libre, 1 = obstáculo
+let view = {open:new Set(), closed:new Set(), path:[]};  // lo que se dibuja de la búsqueda
+let busy = false, painting = null;
+const key = (r, c) => r * COLS + c;       // identifica cada celda con un número único
+
+/* ============ ALGORITMO (parte central) ============ */
+/* kind = 'astar' (informada) o 'bfs' (no informada). Devuelve:
+   steps: cada nodo expandido y los vecinos que entraron a la frontera (para animar)
+   path : lista de celdas de inicio a meta (o null si no hay ruta)            */
+function search(kind, grid, start, goal) {
+  const h = (r, c) => kind === 'astar'
+        ? Math.abs(r - goal.r) + Math.abs(c - goal.c)   // heurística: distancia Manhattan
+        : 0;                                            // BFS no usa heurística
+  const g = new Map(), parent = new Map(), closed = new Set(), steps = [];
+  const open = [{r:start.r, c:start.c, g:0, h:h(start.r,start.c), f:h(start.r,start.c)}];
+  g.set(key(start.r, start.c), 0);
+
+  while (open.length) {
+    // A*: elegir el nodo con menor f = g + h (desempate: menor h). BFS: el primero en la cola (FIFO).
+    let i = 0;
+    if (kind === 'astar')
+      for (let j = 1; j < open.length; j++)
+        if (open[j].f < open[i].f || (open[j].f === open[i].f && open[j].h < open[i].h)) i = j;
+    const cur = open.splice(i, 1)[0], ck = key(cur.r, cur.c);
+    if (closed.has(ck)) continue;
+    closed.add(ck);
+    const added = [];
+
+    if (cur.r === goal.r && cur.c === goal.c) {          // ¡meta alcanzada! reconstruir ruta
+      steps.push({cur: ck, added});
+      const path = [];
+      for (let k = ck; k !== undefined; k = parent.get(k)) path.push({r:Math.floor(k/COLS), c:k%COLS});
+      return {steps, path: path.reverse()};
+    }
+    for (const [dr, dc] of DIRS) {                       // revisar los 4 vecinos
+      const nr = cur.r + dr, nc = cur.c + dc, nk = key(nr, nc);
+      if (nr < 0 || nc < 0 || nr >= ROWS || nc >= COLS) continue;   // fuera del mapa
+      if (grid[nr][nc] === 1 || closed.has(nk)) continue;           // obstáculo o ya explorado
+      const ng = g.get(ck) + 1;                                     // costo real hasta el vecino
+      if (!g.has(nk) || (kind === 'astar' && ng < g.get(nk))) {     // ruta nueva o mejor
+        g.set(nk, ng); parent.set(nk, ck);
+        const hv = h(nr, nc);
+        open.push({r:nr, c:nc, g:ng, h:hv, f:ng + hv});
+        added.push(nk);
+      }
+    }
+    steps.push({cur: ck, added});
+  }
+  return {steps, path: null};                            // frontera vacía: no hay ruta
+}
+
+/* ============ DIBUJO ============ */
+function draw() {
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const k = key(r, c);
+    ctx.fillStyle = grid[r][c] ? '#222' : '#fff';
+    if (view.closed.has(k)) ctx.fillStyle = '#ffe082';
+    if (view.open.has(k))   ctx.fillStyle = '#90caf9';
+    ctx.fillRect(c*SIZE, r*SIZE, SIZE, SIZE);
+    ctx.strokeStyle = '#ccc'; ctx.strokeRect(c*SIZE, r*SIZE, SIZE, SIZE);
+  }
+  for (const p of view.path) { ctx.fillStyle = '#43a047'; ctx.fillRect(p.c*SIZE+1, p.r*SIZE+1, SIZE-2, SIZE-2); }
+  ctx.fillStyle = '#2979ff'; ctx.fillRect(start.c*SIZE+1, start.r*SIZE+1, SIZE-2, SIZE-2);
+  ctx.fillStyle = '#e53935'; ctx.fillRect(goal.c*SIZE+1, goal.r*SIZE+1, SIZE-2, SIZE-2);
+}
+const msg = t => document.getElementById('msg').textContent = t;
+const clearView = () => { view = {open:new Set(), closed:new Set(), path:[]}; };
+
+/* ============ ANIMACIÓN Y BOTONES ============ */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function run(kind) {
+  if (busy) return;
+  busy = true; clearView(); draw(); msg('Buscando...');
+  const res = search(kind, grid, start, goal);
+  for (const s of res.steps) {                  // repite paso a paso lo que hizo el algoritmo
+    view.open.delete(s.cur); view.closed.add(s.cur);
+    s.added.forEach(k => view.open.add(k));
+    draw(); await sleep(DELAY_MS);
+  }
+  const nombre = kind === 'astar' ? 'A*' : 'BFS';
+  if (res.path) {
+    view.path = res.path; draw();
+    msg(nombre + ': ruta encontrada de longitud ' + (res.path.length - 1) + '.');
+  } else msg(nombre + ': NO existe una ruta posible entre inicio y meta.');
+  document.getElementById('out').textContent =
+    nombre + ' -> nodos explorados: ' + res.steps.length +
+    ', longitud de ruta: ' + (res.path ? res.path.length - 1 : 'sin ruta') + '\n' +
+    document.getElementById('out').textContent.split('\n').filter(l => l.startsWith('A*') || l.startsWith('BFS'))
+      .filter(l => !l.startsWith(nombre)).join('\n');
+  busy = false;
+}
+
+function resetMap() {
+  if (busy) return;
+  grid = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+  start = {r:7, c:3}; goal = {r:7, c:21};
+  clearView(); draw(); msg('');
+  document.getElementById('out').textContent = 'Dibuja obstáculos y presiona "Iniciar A*".';
+}
+
+/* ============ EDICIÓN CON EL MOUSE ============ */
+function cellOf(e) {
+  const b = cv.getBoundingClientRect();
+  return {r: Math.floor((e.clientY - b.top) / SIZE), c: Math.floor((e.clientX - b.left) / SIZE)};
+}
+function edit(e) {
+  if (busy) return;
+  const {r, c} = cellOf(e);
+  if (r < 0 || c < 0 || r >= ROWS || c >= COLS) return;
+  const modo = document.querySelector('input[name=modo]:checked').value;
+  const esInicio = r === start.r && c === start.c, esMeta = r === goal.r && c === goal.c;
+  if (modo === 'muro') {
+    if (esInicio || esMeta) return;
+    if (painting === null) painting = grid[r][c] ? 0 : 1;   // el primer clic decide si pinta o borra
+    grid[r][c] = painting;
+  } else if (!esInicio && !esMeta) {
+    grid[r][c] = 0;
+    if (modo === 'inicio') start = {r, c}; else goal = {r, c};
+  }
+  clearView(); draw();
+}
+cv.addEventListener('mousedown', e => { painting = null; edit(e); painting = painting; cv.dragging = true; });
+cv.addEventListener('mousemove', e => { if (cv.dragging) edit(e); });
+window.addEventListener('mouseup', () => { cv.dragging = false; painting = null; });
+
+/* ============ PRUEBAS AUTOMÁTICAS ============ */
+/* BFS con costo uniforme siempre devuelve la ruta más corta, así que sirve de "oráculo":
+   si A* y BFS dan la MISMA longitud en cientos de mapas aleatorios, A* es óptimo. */
+function runTests() {
+  const log = [];
+  let fallos = 0, conRuta = 0, sinRuta = 0, expA = 0, expB = 0;
+  const rnd = n => Math.floor(Math.random() * n);
+
+  // Caso 1: mapa vacío, la ruta debe medir exactamente la distancia Manhattan
+  const vacio = Array.from({length:ROWS}, () => Array(COLS).fill(0));
+  const t1 = search('astar', vacio, {r:0,c:0}, {r:ROWS-1,c:COLS-1});
+  const ok1 = t1.path && t1.path.length - 1 === (ROWS-1) + (COLS-1);
+  log.push((ok1 ? 'OK   ' : 'FALLA') + ' Mapa vacío: ruta = ' + (t1.path ? t1.path.length-1 : '-') + ' (esperado ' + (ROWS+COLS-2) + ')');
+  if (!ok1) fallos++;
+
+  // Caso 2: muro completo que separa inicio y meta -> no debe haber ruta
+  const muro = Array.from({length:ROWS}, () => Array(COLS).fill(0));
+  for (let r = 0; r < ROWS; r++) muro[r][10] = 1;
+  const t2 = search('astar', muro, {r:5,c:2}, {r:5,c:20});
+  const ok2 = t2.path === null;
+  log.push((ok2 ? 'OK   ' : 'FALLA') + ' Muro que bloquea todo: ' + (ok2 ? 'sin ruta (correcto)' : 'encontró ruta (error)'));
+  if (!ok2) fallos++;
+
+  // Caso 3: 500 mapas aleatorios con ~30% de obstáculos
+  for (let t = 0; t < 500; t++) {
+    const g = Array.from({length:ROWS}, () => Array.from({length:COLS}, () => Math.random() < 0.3 ? 1 : 0));
+    const s = {r:rnd(ROWS), c:rnd(COLS)}, m = {r:rnd(ROWS), c:rnd(COLS)};
+    g[s.r][s.c] = 0; g[m.r][m.c] = 0;
+    const a = search('astar', g, s, m), b = search('bfs', g, s, m);
+    expA += a.steps.length; expB += b.steps.length;
+    let ok = (a.path === null) === (b.path === null);                   // ambos coinciden en si hay ruta
+    if (ok && a.path) {
+      ok = a.path.length === b.path.length;                             // misma longitud = óptima
+      for (let i = 1; ok && i < a.path.length; i++) {                   // la ruta debe ser válida
+        const p = a.path[i-1], q = a.path[i];
+        ok = Math.abs(p.r-q.r) + Math.abs(p.c-q.c) === 1 && g[q.r][q.c] === 0;
+      }
+      ok = ok && a.path[0].r===s.r && a.path[0].c===s.c &&
+                 a.path[a.path.length-1].r===m.r && a.path[a.path.length-1].c===m.c;
+      conRuta++;
+    } else sinRuta++;
+    if (!ok) fallos++;
+  }
+  log.push((fallos === 0 ? 'OK   ' : 'FALLA') + ' 500 mapas aleatorios: ' + conRuta + ' con ruta, ' + sinRuta +
+           ' sin ruta; A* y BFS coinciden en longitud y las rutas son válidas');
+  log.push('Nodos explorados en total -> A*: ' + expA + '  |  BFS: ' + expB +
+           '  (A* explora ' + Math.round(100 * expA / expB) + '% de lo que explora BFS)');
+  log.push(fallos === 0 ? '\nRESULTADO: todas las pruebas pasaron.' : '\nRESULTADO: hubo ' + fallos + ' fallos.');
+  document.getElementById('out').textContent = log.join('\n');
+}
+
+document.getElementById('bAstar').onclick = () => run('astar');
+document.getElementById('bBfs').onclick   = () => run('bfs');
+document.getElementById('bReset').onclick = resetMap;
+document.getElementById('bTest').onclick  = runTests;
+resetMap();
+</script>
+</body>
+</html>
